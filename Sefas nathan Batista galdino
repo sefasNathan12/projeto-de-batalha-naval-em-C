@@ -1,0 +1,239 @@
+/*
+ * BATALHA NAVAL EM C - VERSAO PARCIAL (v0.5, em desenvolvimento)
+ * Disciplina: Algoritmos e Pensamento Computacional - Turma B
+ * Integrantes: Savio Nathannael Batista Galdino
+ *              Sefas Nathan Batista Galdino
+ *
+ * Ja funciona: menu, nomes, posicionamento com validacao,
+ *              disparos alternados, agua/acerto, disparo repetido, vencedor.
+ *
+ * TODO (em desenvolvimento):
+ *  - frota completa com 5 navios (hoje sao 3)
+ *  - aviso de "navio afundado"
+ *  - tela final com estatisticas
+ *  - validacao completa das entradas (hoje aceita texto extra)
+ *
+ * Compilar: gcc -o batalha_naval batalha_naval_parcial.c
+ */
+
+#define _CRT_SECURE_NO_WARNINGS
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+#define TAM 10
+#define NUM_NAVIOS 3
+#define TOTAL_POSICOES 7   /* 3 + 2 + 2 */
+
+static const char *NOMES[NUM_NAVIOS] = {"Cruzador", "Submarino", "Destroyer"};
+static const int TAMANHOS[NUM_NAVIOS] = {3, 2, 2};
+
+static char tab[2][TAM][TAM];   /* '~' agua, 'N' navio, 'X' acerto, 'o' erro */
+static int acertos[2];          /* acertos que cada jogador ja fez           */
+static char nomes[2][30];
+
+static void limpar_tela(void) {
+#ifdef _WIN32
+    system("cls");
+#else
+    system("clear");
+#endif
+}
+
+static void ler_linha(char *buf, int n) {
+    if (fgets(buf, n, stdin) == NULL) {
+        printf("\nEntrada encerrada.\n");
+        exit(0);
+    }
+    buf[strcspn(buf, "\r\n")] = '\0';
+}
+
+static void pausar(const char *msg) {
+    char b[100];
+    printf("%s", msg);
+    ler_linha(b, 100);
+}
+
+static void inicializar_tabuleiros(void) {
+    int j, l, c;
+    for (j = 0; j < 2; j++) {
+        acertos[j] = 0;
+        for (l = 0; l < TAM; l++) {
+            for (c = 0; c < TAM; c++) {
+                tab[j][l][c] = '~';
+            }
+        }
+    }
+}
+
+/* esconder = 1: nao mostra os navios (visao do adversario) */
+static void mostrar_tabuleiro(int j, int esconder) {
+    int l, c;
+    char ch;
+
+    printf("\n    ");
+    for (c = 1; c <= TAM; c++) {
+        printf("%2d ", c);
+    }
+    printf("\n");
+    for (l = 0; l < TAM; l++) {
+        printf("%2d  ", l + 1);
+        for (c = 0; c < TAM; c++) {
+            ch = tab[j][l][c];
+            if (esconder && ch == 'N') {
+                ch = '~';
+            }
+            printf(" %c ", ch);
+        }
+        printf("\n");
+    }
+}
+
+static int posicionar_navio(int j, int tam, int l, int c, char o) {
+    int dl = (o == 'V') ? 1 : 0;
+    int dc = (o == 'H') ? 1 : 0;
+    int k;
+
+    if (l + dl * (tam - 1) >= TAM || c + dc * (tam - 1) >= TAM) {
+        printf("O navio sai do tabuleiro! Tente outra posicao.\n");
+        return 0;
+    }
+    for (k = 0; k < tam; k++) {
+        if (tab[j][l + dl * k][c + dc * k] != '~') {
+            printf("Ja existe um navio ai! Tente outra posicao.\n");
+            return 0;
+        }
+    }
+    for (k = 0; k < tam; k++) {
+        tab[j][l + dl * k][c + dc * k] = 'N';
+    }
+    return 1;
+}
+
+static void posicionar_frota(int j) {
+    int n, ok, l, c;
+    char o;
+    char buf[100];
+
+    limpar_tela();
+    printf("=== %s, posicione sua frota ===\n", nomes[j]);
+    for (n = 0; n < NUM_NAVIOS; n++) {
+        ok = 0;
+        while (!ok) {
+            mostrar_tabuleiro(j, 0);
+            printf("\n%s (%d posicoes) - linha coluna H/V (ex: 2 4 H): ",
+                   NOMES[n], TAMANHOS[n]);
+            ler_linha(buf, 100);
+            if (sscanf(buf, "%d %d %c", &l, &c, &o) != 3) {
+                printf("Entrada invalida!\n");
+                continue;
+            }
+            o = (char)toupper((unsigned char)o);
+            if (o != 'H' && o != 'V') {
+                printf("Use H ou V.\n");
+                continue;
+            }
+            if (l < 1 || l > TAM || c < 1 || c > TAM) {
+                printf("Coordenada fora do tabuleiro (1 a %d).\n", TAM);
+                continue;
+            }
+            ok = posicionar_navio(j, TAMANHOS[n], l - 1, c - 1, o);
+        }
+    }
+    mostrar_tabuleiro(j, 0);
+    pausar("\nFrota posicionada! ENTER para esconder a tela...");
+    limpar_tela();
+}
+
+static void jogar(void) {
+    char buf[100];
+    int i, vez = 0, fim = 0, valido, l, c, def;
+
+    inicializar_tabuleiros();
+    for (i = 0; i < 2; i++) {
+        do {
+            printf("Nome do Jogador %d: ", i + 1);
+            ler_linha(buf, 100);
+        } while (buf[0] == '\0');
+        strncpy(nomes[i], buf, 29);
+        nomes[i][29] = '\0';
+    }
+
+    posicionar_frota(0);
+    posicionar_frota(1);
+
+    while (!fim) {
+        def = 1 - vez;
+        limpar_tela();
+        printf("===== VEZ DE %s =====\n", nomes[vez]);
+        printf("\nSeu tabuleiro:");
+        mostrar_tabuleiro(vez, 0);
+        printf("\nTabuleiro de %s:", nomes[def]);
+        mostrar_tabuleiro(def, 1);
+
+        valido = 0;
+        while (!valido) {
+            printf("\nLinha e coluna do disparo: ");
+            ler_linha(buf, 100);
+            if (sscanf(buf, "%d %d", &l, &c) != 2) {
+                printf("Entrada invalida!\n");
+                continue;
+            }
+            if (l < 1 || l > TAM || c < 1 || c > TAM) {
+                printf("Coordenada fora do tabuleiro (1 a %d).\n", TAM);
+                continue;
+            }
+            l--;
+            c--;
+            if (tab[def][l][c] == 'X' || tab[def][l][c] == 'o') {
+                printf("Voce ja atirou ai! Escolha outra.\n");
+            } else if (tab[def][l][c] == 'N') {
+                tab[def][l][c] = 'X';
+                acertos[vez]++;
+                printf("ACERTO!\n");
+                valido = 1;
+            } else {
+                tab[def][l][c] = 'o';
+                printf("AGUA!\n");
+                valido = 1;
+            }
+        }
+
+        if (acertos[vez] == TOTAL_POSICOES) {
+            printf("\n*** %s VENCEU! ***\n", nomes[vez]);
+            fim = 1;
+        } else {
+            vez = def;
+            pausar("\nENTER para passar a vez...");
+        }
+    }
+    pausar("\nENTER para voltar ao menu...");
+}
+
+int main(void) {
+    char buf[100];
+    int op;
+
+    do {
+        printf("\nJOGO BATALHA NAVAL:\n");
+        printf("1 - Iniciar partida\n");
+        printf("0 - Sair\n");
+        printf("Escolha uma opcao: ");
+        ler_linha(buf, 100);
+        op = atoi(buf);
+        if (buf[0] == '\0' || (op == 0 && buf[0] != '0')) {
+            op = -1;
+        }
+
+        if (op == 1) {
+            jogar();
+        } else if (op != 0) {
+            printf("\nOpcao invalida!\n");
+        }
+    } while (op != 0);
+
+    printf("\nAte a proxima!\n");
+    return 0;
+}
