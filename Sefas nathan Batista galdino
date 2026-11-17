@@ -1,19 +1,20 @@
 /*
- * BATALHA NAVAL EM C - VERSAO PARCIAL (v0.5, em desenvolvimento)
- * Disciplina: Algoritmos e Pensamento Computacional - Turma B
+ * BATALHA NAVAL EM C - VERSAO 0.6 (com sistema de salvamento)
+ * Disciplina: Tecnicas e Desenvolvimento de Algoritmos - Arquivos
  * Integrantes: Savio Nathannael Batista Galdino
  *              Sefas Nathan Batista Galdino
  *
- * Ja funciona: menu, nomes, posicionamento com validacao,
- *              disparos alternados, agua/acerto, disparo repetido, vencedor.
+ * Novidades desta versao (uso de arquivos):
+ *  - Salvar a partida em andamento (digite S no lugar do disparo)
+ *  - Continuar uma partida salva (menu, opcao 2)
+ *  - Historico de vitorias gravado em arquivo (modo "a") e lido
+ *    caractere por caractere (fgetc)
  *
- * TODO (em desenvolvimento):
- *  - frota completa com 5 navios (hoje sao 3)
- *  - aviso de "navio afundado"
- *  - tela final com estatisticas
- *  - validacao completa das entradas (hoje aceita texto extra)
+ * Arquivos usados:
+ *  jogo_salvo.txt : estado da partida (criado com "w", lido com "r")
+ *  historico.txt  : vencedores (criado/atualizado com "a")
  *
- * Compilar: gcc -o batalha_naval batalha_naval_parcial.c
+ * Compilar: gcc -o batalha_naval batalha_naval_salvamento.c
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -27,12 +28,29 @@
 #define NUM_NAVIOS 3
 #define TOTAL_POSICOES 7   /* 3 + 2 + 2 */
 
+#define ARQ_SAVE      "jogo_salvo.txt"
+#define ARQ_HISTORICO "historico.txt"
+#define CABECALHO     "BATALHA_NAVAL_SAVE_V2"
+
 static const char *NOMES[NUM_NAVIOS] = {"Cruzador", "Submarino", "Destroyer"};
 static const int TAMANHOS[NUM_NAVIOS] = {3, 2, 2};
 
-static char tab[2][TAM][TAM];   /* '~' agua, 'N' navio, 'X' acerto, 'o' erro */
+static char tab[2][TAM][TAM];   /* '~' agua, inicial do navio (C, S, D), 'X' acerto, 'o' erro */
 static int acertos[2];          /* acertos que cada jogador ja fez           */
 static char nomes[2][30];
+
+/* Cada navio e desenhado pela inicial do seu nome: C, S ou D */
+static int eh_navio(char ch) {
+    int i;
+    for (i = 0; i < NUM_NAVIOS; i++) {
+        if (NOMES[i][0] == ch) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* ================= Utilidades ================= */
 
 static void limpar_tela(void) {
 #ifdef _WIN32
@@ -56,6 +74,8 @@ static void pausar(const char *msg) {
     ler_linha(b, 100);
 }
 
+/* ================= Tabuleiros ================= */
+
 static void inicializar_tabuleiros(void) {
     int j, l, c;
     for (j = 0; j < 2; j++) {
@@ -68,7 +88,6 @@ static void inicializar_tabuleiros(void) {
     }
 }
 
-/* esconder = 1: nao mostra os navios (visao do adversario) */
 static void mostrar_tabuleiro(int j, int esconder) {
     int l, c;
     char ch;
@@ -82,7 +101,7 @@ static void mostrar_tabuleiro(int j, int esconder) {
         printf("%2d  ", l + 1);
         for (c = 0; c < TAM; c++) {
             ch = tab[j][l][c];
-            if (esconder && ch == 'N') {
+            if (esconder && eh_navio(ch)) {
                 ch = '~';
             }
             printf(" %c ", ch);
@@ -91,7 +110,8 @@ static void mostrar_tabuleiro(int j, int esconder) {
     }
 }
 
-static int posicionar_navio(int j, int tam, int l, int c, char o) {
+static int posicionar_navio(int j, int n, int l, int c, char o) {
+    int tam = TAMANHOS[n];
     int dl = (o == 'V') ? 1 : 0;
     int dc = (o == 'H') ? 1 : 0;
     int k;
@@ -107,7 +127,7 @@ static int posicionar_navio(int j, int tam, int l, int c, char o) {
         }
     }
     for (k = 0; k < tam; k++) {
-        tab[j][l + dl * k][c + dc * k] = 'N';
+        tab[j][l + dl * k][c + dc * k] = NOMES[n][0];  /* inicial do navio */
     }
     return 1;
 }
@@ -139,7 +159,7 @@ static void posicionar_frota(int j) {
                 printf("Coordenada fora do tabuleiro (1 a %d).\n", TAM);
                 continue;
             }
-            ok = posicionar_navio(j, TAMANHOS[n], l - 1, c - 1, o);
+            ok = posicionar_navio(j, n, l - 1, c - 1, o);
         }
     }
     mostrar_tabuleiro(j, 0);
@@ -147,22 +167,166 @@ static void posicionar_frota(int j) {
     limpar_tela();
 }
 
-static void jogar(void) {
-    char buf[100];
-    int i, vez = 0, fim = 0, valido, l, c, def;
+/* ================= ARQUIVOS: salvar, carregar, historico ================= */
 
-    inicializar_tabuleiros();
-    for (i = 0; i < 2; i++) {
-        do {
-            printf("Nome do Jogador %d: ", i + 1);
-            ler_linha(buf, 100);
-        } while (buf[0] == '\0');
-        strncpy(nomes[i], buf, 29);
-        nomes[i][29] = '\0';
+/*
+ * Formato do arquivo jogo_salvo.txt (texto):
+ *   linha 1: cabecalho (identifica o arquivo)
+ *   linha 2: de quem e a vez (0 ou 1)
+ *   linha 3: nome do jogador 1
+ *   linha 4: nome do jogador 2
+ *   depois: 10 linhas do tabuleiro do jogador 1 e 10 do jogador 2
+ *           (cada linha tem 10 caracteres: ~ C S D X o)
+ * Retorna 1 se salvou, 0 se deu erro.
+ */
+static int salvar_jogo(int vez) {
+    FILE *fp;
+    int j, l, c;
+
+    fp = fopen(ARQ_SAVE, "w");           /* "w": cria ou apaga o anterior */
+    if (fp == 0) {
+        printf("Erro ao criar o arquivo de salvamento!\n");
+        return 0;
     }
 
-    posicionar_frota(0);
-    posicionar_frota(1);
+    fprintf(fp, "%s\n", CABECALHO);
+    fprintf(fp, "%d\n", vez);
+    fprintf(fp, "%s\n", nomes[0]);
+    fprintf(fp, "%s\n", nomes[1]);
+    for (j = 0; j < 2; j++) {
+        for (l = 0; l < TAM; l++) {
+            for (c = 0; c < TAM; c++) {
+                fputc(tab[j][l][c], fp);   /* grava um caractere */
+            }
+            fputc('\n', fp);
+        }
+    }
+
+    if (fclose(fp) == EOF) {
+        printf("Erro ao fechar o arquivo de salvamento!\n");
+        return 0;
+    }
+    return 1;
+}
+
+/* Le e valida o conteudo do arquivo. Retorna 1 se tudo estiver correto. */
+static int ler_estado(FILE *fp, int *vez) {
+    char cab[50];
+    int j, l, c, ch, v, ret, navios;
+
+    ret = fscanf(fp, "%49s", cab);
+    if (ret != 1 || strcmp(cab, CABECALHO) != 0) {
+        return 0;                          /* nao e um arquivo de save */
+    }
+    ret = fscanf(fp, "%d\n", &v);
+    if (ret != 1 || (v != 0 && v != 1)) {
+        return 0;
+    }
+    for (j = 0; j < 2; j++) {
+        if (fgets(nomes[j], 30, fp) == NULL) {
+            return 0;
+        }
+        nomes[j][strcspn(nomes[j], "\r\n")] = '\0';
+        if (nomes[j][0] == '\0') {
+            return 0;
+        }
+    }
+    for (j = 0; j < 2; j++) {
+        navios = 0;
+        for (l = 0; l < TAM; l++) {
+            for (c = 0; c < TAM; c++) {
+                ch = fgetc(fp);              /* le um caractere */
+                if (ch != '~' && ch != 'X' && ch != 'o' && !eh_navio((char)ch)) {
+                    return 0;                /* EOF ou caractere estranho */
+                }
+                if (ch == 'X' || eh_navio((char)ch)) {
+                    navios++;
+                }
+                tab[j][l][c] = (char)ch;
+            }
+            ch = fgetc(fp);
+            if (ch == '\r') {
+                ch = fgetc(fp);
+            }
+            if (ch != '\n') {
+                return 0;
+            }
+        }
+        if (navios != TOTAL_POSICOES) {
+            return 0;                        /* frota incompleta ou alterada */
+        }
+    }
+
+    /* recalcula os acertos a partir dos tabuleiros */
+    acertos[0] = 0;
+    acertos[1] = 0;
+    for (j = 0; j < 2; j++) {
+        for (l = 0; l < TAM; l++) {
+            for (c = 0; c < TAM; c++) {
+                if (tab[j][l][c] == 'X') {
+                    acertos[1 - j]++;
+                }
+            }
+        }
+    }
+    *vez = v;
+    return 1;
+}
+
+/* Retorna 1 se carregou, 0 se nao existe ou esta invalido. */
+static int carregar_jogo(int *vez) {
+    FILE *fp;
+    int ok;
+
+    fp = fopen(ARQ_SAVE, "r");           /* "r": so leitura */
+    if (fp == 0) {
+        printf("\nNenhum jogo salvo foi encontrado.\n");
+        return 0;
+    }
+    ok = ler_estado(fp, vez);
+    fclose(fp);
+    if (!ok) {
+        printf("\nO arquivo de salvamento esta corrompido ou invalido.\n");
+        return 0;
+    }
+    return 1;
+}
+
+static void registrar_vitoria(const char *vencedor, const char *perdedor) {
+    FILE *fp;
+
+    fp = fopen(ARQ_HISTORICO, "a");      /* "a": acrescenta no final */
+    if (fp == 0) {
+        printf("Nao foi possivel gravar o historico.\n");
+        return;
+    }
+    fprintf(fp, "Vencedor: %s | Perdedor: %s\n", vencedor, perdedor);
+    fclose(fp);
+}
+
+static void ver_historico(void) {
+    FILE *fp;
+    int c;
+
+    fp = fopen(ARQ_HISTORICO, "r");
+    if (fp == 0) {
+        printf("\nAinda nao ha partidas registradas.\n");
+        return;
+    }
+    printf("\n===== HISTORICO DE VITORIAS =====\n");
+    while ((c = fgetc(fp)) != EOF) {     /* le caractere por caractere */
+        putchar(c);
+    }
+    printf("=================================\n");
+    fclose(fp);
+}
+
+/* ================= Partida ================= */
+
+/* Executa os turnos a partir de 'vez'. Retorna ao menu ao salvar ou ao fim. */
+static void jogar_turnos(int vez) {
+    char buf[100];
+    int fim = 0, valido, l, c, def;
 
     while (!fim) {
         def = 1 - vez;
@@ -175,8 +339,16 @@ static void jogar(void) {
 
         valido = 0;
         while (!valido) {
-            printf("\nLinha e coluna do disparo: ");
+            printf("\nLinha e coluna do disparo (ou S para salvar e sair): ");
             ler_linha(buf, 100);
+
+            if ((buf[0] == 's' || buf[0] == 'S') && buf[1] == '\0') {
+                if (salvar_jogo(vez)) {
+                    printf("Jogo salvo em %s!\n", ARQ_SAVE);
+                }
+                pausar("ENTER para voltar ao menu...");
+                return;
+            }
             if (sscanf(buf, "%d %d", &l, &c) != 2) {
                 printf("Entrada invalida!\n");
                 continue;
@@ -189,7 +361,7 @@ static void jogar(void) {
             c--;
             if (tab[def][l][c] == 'X' || tab[def][l][c] == 'o') {
                 printf("Voce ja atirou ai! Escolha outra.\n");
-            } else if (tab[def][l][c] == 'N') {
+            } else if (eh_navio(tab[def][l][c])) {
                 tab[def][l][c] = 'X';
                 acertos[vez]++;
                 printf("ACERTO!\n");
@@ -203,6 +375,9 @@ static void jogar(void) {
 
         if (acertos[vez] == TOTAL_POSICOES) {
             printf("\n*** %s VENCEU! ***\n", nomes[vez]);
+            registrar_vitoria(nomes[vez], nomes[def]);
+            remove(ARQ_SAVE);            /* partida acabou: apaga o save */
+            printf("Resultado gravado no historico.\n");
             fim = 1;
         } else {
             vez = def;
@@ -212,13 +387,46 @@ static void jogar(void) {
     pausar("\nENTER para voltar ao menu...");
 }
 
+static void nova_partida(void) {
+    char buf[100];
+    int i;
+
+    inicializar_tabuleiros();
+    for (i = 0; i < 2; i++) {
+        do {
+            printf("Nome do Jogador %d: ", i + 1);
+            ler_linha(buf, 100);
+        } while (buf[0] == '\0');
+        strncpy(nomes[i], buf, 29);
+        nomes[i][29] = '\0';
+    }
+    posicionar_frota(0);
+    posicionar_frota(1);
+    jogar_turnos(0);
+}
+
+static void continuar_partida(void) {
+    int vez;
+
+    if (carregar_jogo(&vez)) {
+        printf("\nJogo carregado: %s x %s. Vez de %s.\n",
+               nomes[0], nomes[1], nomes[vez]);
+        pausar("ENTER para continuar...");
+        jogar_turnos(vez);
+    }
+}
+
+/* ================= Programa principal ================= */
+
 int main(void) {
     char buf[100];
     int op;
 
     do {
         printf("\nJOGO BATALHA NAVAL:\n");
-        printf("1 - Iniciar partida\n");
+        printf("1 - Nova partida\n");
+        printf("2 - Continuar partida salva\n");
+        printf("3 - Ver historico de vitorias\n");
         printf("0 - Sair\n");
         printf("Escolha uma opcao: ");
         ler_linha(buf, 100);
@@ -228,7 +436,11 @@ int main(void) {
         }
 
         if (op == 1) {
-            jogar();
+            nova_partida();
+        } else if (op == 2) {
+            continuar_partida();
+        } else if (op == 3) {
+            ver_historico();
         } else if (op != 0) {
             printf("\nOpcao invalida!\n");
         }
